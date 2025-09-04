@@ -27,14 +27,37 @@ def compute_atr(df: pd.DataFrame, period: int = 14) -> pd.Series:
 def compute_adx(df: pd.DataFrame, period: int = 14) -> pd.Series:
     if df.empty or len(df) < period:
         return pd.Series([np.nan]*len(df), index=df.index)
-    high, low, close = df['high'], df['low'], df['close']
-    plus_dm = high.diff().clip(lower=0)
-    minus_dm = (-low.diff()).clip(lower=0)
-    tr = pd.concat([high - low, (high - close.shift()).abs(), (low - close.shift()).abs()], axis=1).max(axis=1)
-    atr = tr.rolling(period, min_periods=1).mean().replace(0, np.nan)
+    
+    high, low, close = df['high'].copy(), df['low'].copy(), df['close'].copy()
+    
+    # Calculate directional movements
+    plus_dm = high.diff()
+    minus_dm = -low.diff()
+    
+    # Set negative values to 0
+    plus_dm = plus_dm.where(plus_dm > 0, 0)
+    minus_dm = minus_dm.where(minus_dm > 0, 0)
+    
+    # Calculate True Range
+    high_low = high - low
+    high_close = (high - close.shift()).abs()
+    low_close = (low - close.shift()).abs()
+    tr = pd.concat([high_low, high_close, low_close], axis=1).max(axis=1)
+    
+    # Calculate ATR
+    atr = tr.rolling(period, min_periods=1).mean()
+    atr = atr.where(atr != 0, np.nan)  # Replace 0 with NaN
+    
+    # Calculate DI+ and DI-
     plus_di = 100 * (plus_dm.rolling(period).sum() / atr)
     minus_di = 100 * (minus_dm.rolling(period).sum() / atr)
-    dx = 100 * (plus_di - minus_di).abs() / (plus_di + minus_di)
+    
+    # Calculate DX
+    di_sum = plus_di + minus_di
+    di_diff = (plus_di - minus_di).abs()
+    dx = 100 * (di_diff / di_sum).where(di_sum != 0, 0)
+    
+    # Calculate ADX
     adx = dx.rolling(period, min_periods=1).mean()
     return adx
 
@@ -87,6 +110,8 @@ class Params:
 
 # ------------------- Strategy Logic -------------------
 def is_capitulation_flush(i: int, df: pd.DataFrame, p: Params) -> bool:
+    if i >= len(df):
+        return False
     row = df.iloc[i]
     pct_change = (row['close'] / row['open'] - 1.0)
     close_5d_avg = df['close'].iloc[max(0, i-4):i+1].mean()
@@ -132,33 +157,63 @@ def scan_candidates(df: pd.DataFrame, p: Params) -> pd.DataFrame:
 def simulate_trades(df: pd.DataFrame, p: Params, initial_equity: float = 100000.0) -> Tuple[pd.DataFrame, pd.DataFrame, Dict[str, Any]]:
     if df.empty or len(df) < p.adx_period + 1:
         return pd.DataFrame(), pd.DataFrame(), {'trades':0,'win_rate_pct':0,'avg_return_pct':0,'sharpe_like':np.nan,'max_drawdown_pct':0,'final_equity':initial_equity}
+    
     candidates = scan_candidates(df, p)
+    if candidates.empty:
+        return pd.DataFrame(), pd.DataFrame(), {'trades':0,'win_rate_pct':0,'avg_return_pct':0,'sharpe_like':np.nan,'max_drawdown_pct':0,'final_equity':initial_equity}
+    
     equity = initial_equity
     equity_curve = []
     trades = []
     
+    # Compute SAR for exit signals
+    df_with_sar = df.copy()
+    df_with_sar['SAR'] = compute_parabolic_sar(df_with_sar, af=p.sar_af, max_af=p.sar_max_af)
+    
     for idx, sig in candidates.iterrows():
-        i = df.index.get_loc(idx); next_i = i + 1
-        if next_i >= len(df): continue
+        try:
+            i = df.index.get_loc(idx)
+            next_i = i + 1
+        except KeyError:
+            continue
+            
+        if next_i >= len(df): 
+            continue
+            
         next_bar = df.iloc[next_i]
         if next_bar['close'] >= sig['trigger']:
             entry_price = float(next_bar['close'])
             shares = int((equity * p.max_position_pct) // entry_price)
-            if shares <= 0: continue
+            if shares <= 0: 
+                continue
+                
             flush_low = float(sig['flush_low'])
             stop_price = float(flush_low * (1 - p.stop_loss_pct))
-            exit_price = None; exit_date = None
+            exit_price = None
+            exit_date = None
+            
             for j in range(next_i, min(len(df), next_i + p.hold_max_bars)):
+                # Stop loss check
                 if df['low'].iloc[j] <= stop_price:
-                    exit_price = stop_price; exit_date = df.index[j]; break
-                if df['high'].iloc[j] >= df['SAR'].iloc[j]:
-                    exit_price = float(df['close'].iloc[j]); exit_date = df.index[j]; break
+                    exit_price = stop_price
+                    exit_date = df.index[j]
+                    break
+                # SAR exit check
+                if not pd.isna(df_with_sar['SAR'].iloc[j]) and df['high'].iloc[j] >= df_with_sar['SAR'].iloc[j]:
+                    exit_price = float(df['close'].iloc[j])
+                    exit_date = df.index[j]
+                    break
+                    
+            # If no exit condition met, exit at max hold period
             if exit_price is None:
-                exit_price = float(df['close'].iloc[min(len(df)-1, next_i + 20)])
-                exit_date = df.index[min(len(df)-1, next_i + 20)]
+                exit_idx = min(len(df)-1, next_i + p.hold_max_bars - 1)
+                exit_price = float(df['close'].iloc[exit_idx])
+                exit_date = df.index[exit_idx]
+                
             pnl = (exit_price - entry_price) * shares
-            ret = pnl / (entry_price * shares) if entry_price*shares>0 else 0.0
+            ret = pnl / (entry_price * shares) if entry_price * shares > 0 else 0.0
             equity += pnl
+            
             trades.append({
                 'entry_date': df.index[next_i],
                 'entry_price': entry_price,
@@ -166,22 +221,39 @@ def simulate_trades(df: pd.DataFrame, p: Params, initial_equity: float = 100000.
                 'exit_price': exit_price,
                 'shares': shares,
                 'pnl': pnl,
-                'return_pct': 100*ret
+                'return_pct': 100 * ret
             })
+            
         equity_curve.append({'date': df.index[next_i], 'equity': equity})
         
     trades_df = pd.DataFrame(trades)
     curve_df = pd.DataFrame(equity_curve).set_index('date') if len(equity_curve) else pd.DataFrame(columns=['equity'])
+    
+    # Calculate statistics
     wins = (trades_df['pnl'] > 0).sum() if len(trades_df) else 0
-    total = len(trades_df); win_rate = 100 * wins / total if total else 0.0
+    total = len(trades_df)
+    win_rate = 100 * wins / total if total else 0.0
     avg_ret = trades_df['return_pct'].mean() if total else 0.0
+    
     daily_returns = curve_df['equity'].pct_change().dropna() if len(curve_df) else pd.Series(dtype=float)
-    sharpe = (np.sqrt(252) * daily_returns.mean() / daily_returns.std()) if len(daily_returns) and daily_returns.std()>0 else np.nan
+    sharpe = (np.sqrt(252) * daily_returns.mean() / daily_returns.std()) if len(daily_returns) and daily_returns.std() > 0 else np.nan
+    
     if len(curve_df):
-        roll_max = curve_df['equity'].cummax(); drawdown = curve_df['equity'] / roll_max - 1.0; max_dd = 100 * drawdown.min() if len(drawdown) else 0.0
+        roll_max = curve_df['equity'].cummax()
+        drawdown = curve_df['equity'] / roll_max - 1.0
+        max_dd = 100 * drawdown.min() if len(drawdown) else 0.0
     else:
         max_dd = 0.0
-    stats = {'trades': total,'win_rate_pct': win_rate,'avg_return_pct': avg_ret,'sharpe_like': float(sharpe) if sharpe==sharpe else np.nan,'max_drawdown_pct': max_dd,'final_equity': equity}
+        
+    stats = {
+        'trades': total,
+        'win_rate_pct': win_rate,
+        'avg_return_pct': avg_ret,
+        'sharpe_like': float(sharpe) if not pd.isna(sharpe) else np.nan,
+        'max_drawdown_pct': max_dd,
+        'final_equity': equity
+    }
+    
     return trades_df, curve_df, stats
 
 # ------------------- UI -------------------
@@ -280,34 +352,77 @@ elif mode == "Enter ticker(s)":
 if datasets:
     all_trades = []
     for symbol, df in datasets:
-        trades_df, curve_df, stats = simulate_trades(df, p, initial_equity=initial_equity)
-        if stats['trades'] == 0:
-            st.warning(f"No trades generated for {symbol} in this range.")
-            continue
-        trades_df['symbol'] = symbol
-        all_trades.append(trades_df)
+        with st.spinner(f"Running backtest for {symbol}..."):
+            trades_df, curve_df, stats = simulate_trades(df, p, initial_equity=initial_equity)
+            if stats['trades'] == 0:
+                st.warning(f"No trades generated for {symbol} in this range.")
+                continue
+            trades_df['symbol'] = symbol
+            all_trades.append(trades_df)
 
-        st.subheader(f"Results for {symbol}")
-        st.write(f"Trades: {stats['trades']}, Win%: {stats['win_rate_pct']:.1f}, Sharpe: {stats['sharpe_like']:.2f}, Final Equity: ${stats['final_equity']:,.0f}")
+            st.subheader(f"Results for {symbol}")
+            col1, col2, col3, col4 = st.columns(4)
+            with col1:
+                st.metric("Trades", stats['trades'])
+            with col2:
+                st.metric("Win Rate", f"{stats['win_rate_pct']:.1f}%")
+            with col3:
+                st.metric("Avg Return", f"{stats['avg_return_pct']:.2f}%")
+            with col4:
+                st.metric("Final Equity", f"${stats['final_equity']:,.0f}")
 
-        fig = plt.figure(figsize=(10,4))
-        plt.plot(df.index, df['close'], label='Close')
-        plt.plot(df.index, compute_parabolic_sar(df, p.sar_af, p.sar_max_af), '--', label='SAR')
-        if not trades_df.empty:
-            plt.scatter(trades_df['entry_date'], trades_df['entry_price'], marker='^', color='g', label='Entry')
-            plt.scatter(trades_df['exit_date'], trades_df['exit_price'], marker='v', color='r', label='Exit')
-        
-        plt.title(f"Price Chart and Trades for {symbol}")
-        plt.xlabel("Date")
-        plt.ylabel("Price")
-        plt.legend()
-        plt.grid(True)
-        st.pyplot(fig)
+            # Create chart
+            fig, ax = plt.subplots(figsize=(12, 6))
+            ax.plot(df.index, df['close'], label='Close Price', linewidth=1)
+            
+            # Add SAR
+            sar_values = compute_parabolic_sar(df, p.sar_af, p.sar_max_af)
+            ax.plot(df.index, sar_values, '--', label='Parabolic SAR', alpha=0.7)
+            
+            # Add trades
+            if not trades_df.empty:
+                ax.scatter(trades_df['entry_date'], trades_df['entry_price'], 
+                          marker='^', color='green', s=50, label='Entry', zorder=5)
+                ax.scatter(trades_df['exit_date'], trades_df['exit_price'], 
+                          marker='v', color='red', s=50, label='Exit', zorder=5)
+            
+            ax.set_title(f"Price Chart and Trades for {symbol}")
+            ax.set_xlabel("Date")
+            ax.set_ylabel("Price ($)")
+            ax.legend()
+            ax.grid(True, alpha=0.3)
+            plt.tight_layout()
+            st.pyplot(fig)
+
+            # Show individual trades
+            if not trades_df.empty:
+                st.subheader(f"Individual Trades for {symbol}")
+                display_trades = trades_df[['entry_date', 'entry_price', 'exit_date', 'exit_price', 'return_pct']].copy()
+                display_trades['entry_date'] = display_trades['entry_date'].dt.strftime('%Y-%m-%d')
+                display_trades['exit_date'] = display_trades['exit_date'].dt.strftime('%Y-%m-%d')
+                st.dataframe(display_trades)
 
     if all_trades:
-        st.subheader("All Trades")
-        full_trades_df = pd.concat(all_trades)
+        st.subheader("All Trades Summary")
+        full_trades_df = pd.concat(all_trades, ignore_index=True)
+        
+        # Summary statistics
+        total_trades = len(full_trades_df)
+        winning_trades = (full_trades_df['pnl'] > 0).sum()
+        win_rate = 100 * winning_trades / total_trades if total_trades > 0 else 0
+        avg_return = full_trades_df['return_pct'].mean()
+        
+        col1, col2, col3 = st.columns(3)
+        with col1:
+            st.metric("Total Trades", total_trades)
+        with col2:
+            st.metric("Overall Win Rate", f"{win_rate:.1f}%")
+        with col3:
+            st.metric("Average Return", f"{avg_return:.2f}%")
+        
         st.dataframe(full_trades_df)
+        
+        # Download button
         csv_buffer = io.StringIO()
         full_trades_df.to_csv(csv_buffer, index=False)
         st.download_button(
