@@ -36,7 +36,7 @@ def compute_adx(df: pd.DataFrame, period: int = 14) -> pd.Series:
     minus_di = 100 * (minus_dm.rolling(period).sum() / atr)
     dx = 100 * (plus_di - minus_di).abs() / (plus_di + minus_di)
     adx = dx.rolling(period, min_periods=1).mean()
-    return adx.reindex(df.index)
+    return adx
 
 def compute_parabolic_sar(df: pd.DataFrame, af: float = 0.02, max_af: float = 0.2) -> pd.Series:
     if df.empty:
@@ -133,7 +133,10 @@ def simulate_trades(df: pd.DataFrame, p: Params, initial_equity: float = 100000.
     if df.empty or len(df) < p.adx_period + 1:
         return pd.DataFrame(), pd.DataFrame(), {'trades':0,'win_rate_pct':0,'avg_return_pct':0,'sharpe_like':np.nan,'max_drawdown_pct':0,'final_equity':initial_equity}
     candidates = scan_candidates(df, p)
-    equity = initial_equity; equity_curve = []; trades = []
+    equity = initial_equity
+    equity_curve = []
+    trades = []
+    
     for idx, sig in candidates.iterrows():
         i = df.index.get_loc(idx); next_i = i + 1
         if next_i >= len(df): continue
@@ -165,7 +168,8 @@ def simulate_trades(df: pd.DataFrame, p: Params, initial_equity: float = 100000.
                 'pnl': pnl,
                 'return_pct': 100*ret
             })
-    equity_curve.append({'date': df.index[next_i], 'equity': equity})
+        equity_curve.append({'date': df.index[next_i], 'equity': equity})
+        
     trades_df = pd.DataFrame(trades)
     curve_df = pd.DataFrame(equity_curve).set_index('date') if len(equity_curve) else pd.DataFrame(columns=['equity'])
     wins = (trades_df['pnl'] > 0).sum() if len(trades_df) else 0
@@ -299,7 +303,7 @@ if datasets:
         plt.legend()
         plt.grid(True)
         st.pyplot(fig)
-        
+
     if all_trades:
         st.subheader("All Trades")
         full_trades_df = pd.concat(all_trades)
