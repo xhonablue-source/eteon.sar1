@@ -434,7 +434,8 @@ def simulate_trades(df: pd.DataFrame, p: Params, initial_equity: float = 100000.
     return trades_df, curve_df, stats
 
 # ------------------- UI -------------------
-st.title("SAR Reversion Spike — Streamlit App")
+st.title("🏛️ Eteon Capital")
+st.header("SAR Reversion Spike Backtest")
 st.markdown("Upload OHLCV data or enter tickers to fetch automatically.")
 
 with st.sidebar:
