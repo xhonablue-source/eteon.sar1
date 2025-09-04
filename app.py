@@ -11,7 +11,7 @@ import streamlit as st
 import yfinance as yf
 from datetime import datetime
 
-st.set_page_config(page_title='SAR Reversion Spike — Backtest', layout='wide')
+st.set_page_config(page_title='SAR Reversion Spike — Streamlit', layout='wide')
 
 # ------------------- Indicator helpers -------------------
 def compute_atr(df: pd.DataFrame, period: int = 14) -> pd.Series:
