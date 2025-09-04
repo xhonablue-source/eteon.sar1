@@ -15,14 +15,18 @@ st.set_page_config(page_title='SAR Reversion Spike — Streamlit', layout='wide'
 
 # ------------------- Indicator helpers -------------------
 def compute_atr(df: pd.DataFrame, period: int = 14) -> pd.Series:
+    if df.empty:
+        return pd.Series([], dtype=float, index=df.index)
     high_low = df['high'] - df['low']
     high_close = (df['high'] - df['close'].shift()).abs()
     low_close = (df['low'] - df['close'].shift()).abs()
     tr = pd.concat([high_low, high_close, low_close], axis=1).max(axis=1)
     atr = tr.rolling(period, min_periods=1).mean()
-    return atr
+    return atr.reindex(df.index)
 
 def compute_adx(df: pd.DataFrame, period: int = 14) -> pd.Series:
+    if df.empty or len(df) < period:
+        return pd.Series([np.nan]*len(df), index=df.index)
     high, low, close = df['high'], df['low'], df['close']
     plus_dm = high.diff().clip(lower=0)
     minus_dm = (-low.diff()).clip(lower=0)
@@ -32,12 +36,13 @@ def compute_adx(df: pd.DataFrame, period: int = 14) -> pd.Series:
     minus_di = 100 * (minus_dm.rolling(period).sum() / atr)
     dx = 100 * (plus_di - minus_di).abs() / (plus_di + minus_di)
     adx = dx.rolling(period, min_periods=1).mean()
-    return adx
+    return adx.reindex(df.index)  # ✅ ensures alignment
 
 def compute_parabolic_sar(df: pd.DataFrame, af: float = 0.02, max_af: float = 0.2) -> pd.Series:
+    if df.empty:
+        return pd.Series([], dtype=float, index=df.index)
     high, low = df['high'].values, df['low'].values
     n = len(df); sar = np.zeros(n)
-    if n == 0: return pd.Series([], dtype=float)
     up = True; ep = high[0]; sar[0] = low[0]
     a = af; af_local = a
     for i in range(1, n):
@@ -102,6 +107,8 @@ def compute_trigger_price(flush_low: float, p: Params) -> float:
     return float(flush_low * p.reclaim_mult)
 
 def scan_candidates(df: pd.DataFrame, p: Params) -> pd.DataFrame:
+    if df.empty:
+        return pd.DataFrame()
     d = df.copy()
     d['ATR'] = compute_atr(d, p.atr_period)
     d['ADX'] = compute_adx(d, p.adx_period)
@@ -123,6 +130,8 @@ def scan_candidates(df: pd.DataFrame, p: Params) -> pd.DataFrame:
     return pd.DataFrame(out).set_index('date') if out else pd.DataFrame(columns=['flush_low','trigger','close','sar','atr','adx'])
 
 def simulate_trades(df: pd.DataFrame, p: Params, initial_equity: float = 100000.0) -> Tuple[pd.DataFrame, pd.DataFrame, Dict[str, Any]]:
+    if df.empty or len(df) < p.adx_period + 1:
+        return pd.DataFrame(), pd.DataFrame(), {'trades':0,'win_rate_pct':0,'avg_return_pct':0,'sharpe_like':np.nan,'max_drawdown_pct':0,'final_equity':initial_equity}
     candidates = scan_candidates(df, p)
     equity = initial_equity; equity_curve = []; trades = []
     for idx, sig in candidates.iterrows():
@@ -253,6 +262,9 @@ elif mode == "Enter ticker(s)":
         for t in [x.strip().upper() for x in tickers.split(',') if x.strip()]:
             try:
                 df = yf.download(t, start=start_date, end=end_date)
+                if df.empty:
+                    st.warning(f"No data found for {t} in this date range.")
+                    continue
                 df = df.rename(columns={'Open':'open','High':'high','Low':'low','Close':'close','Volume':'volume'})
                 df = df[['open','high','low','close','volume']]
                 df.attrs['symbol'] = t
@@ -262,26 +274,21 @@ elif mode == "Enter ticker(s)":
 
 # ------------------- Run backtest -------------------
 if datasets:
-    all_trades = []; summary_stats = {}
+    all_trades = []
     for symbol, df in datasets:
         trades_df, curve_df, stats = simulate_trades(df, p, initial_equity=initial_equity)
+        if stats['trades'] == 0:
+            st.warning(f"No trades generated for {symbol} in this range.")
+            continue
         trades_df['symbol'] = symbol
-        all_trades.append(trades_df); summary_stats[symbol] = stats
+        all_trades.append(trades_df)
 
         st.subheader(f"Results for {symbol}")
         st.write(f"Trades: {stats['trades']}, Win%: {stats['win_rate_pct']:.1f}, Sharpe: {stats['sharpe_like']:.2f}, Final Equity: ${stats['final_equity']:,.0f}")
+
         fig = plt.figure(figsize=(10,4))
-        plt.plot(df.index, df['close'], label='Close'); plt.plot(df.index, compute_parabolic_sar(df, p.sar_af, p.sar_max_af), '--', label='SAR')
+        plt.plot(df.index, df['close'], label='Close')
+        plt.plot(df.index, compute_parabolic_sar(df, p.sar_af, p.sar_max_af), '--', label='SAR')
         if not trades_df.empty:
             plt.scatter(trades_df['entry_date'], trades_df['entry_price'], marker='^', color='g', label='Entry')
-            plt.scatter(trades_df['exit_date'], trades_df['exit_price'], marker='v', color='r', label='Exit')
-        plt.title(f"{symbol} Price & SAR"); plt.legend(); plt.grid(True); st.pyplot(fig)
-
-        if not trades_df.empty:
-            st.dataframe(trades_df)
-            st.download_button(f"Download {symbol} trades CSV", trades_df.to_csv(index=False).encode('utf-8'), file_name=f"{symbol}_trades.csv")
-
-    if all_trades:
-        all_trades_df = pd.concat(all_trades, ignore_index=True)
-        st.subheader("All Trades Combined")
-        st.dataframe(all_trades_df)
+            plt.scatter(trades_df['exit_date'], trades_df['exit_price'], marker='v', color='r', label
