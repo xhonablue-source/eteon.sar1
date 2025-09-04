@@ -36,7 +36,7 @@ def compute_adx(df: pd.DataFrame, period: int = 14) -> pd.Series:
     minus_di = 100 * (minus_dm.rolling(period).sum() / atr)
     dx = 100 * (plus_di - minus_di).abs() / (plus_di + minus_di)
     adx = dx.rolling(period, min_periods=1).mean()
-    return adx.reindex(df.index)  # ✅ ensures alignment
+    return adx.reindex(df.index)
 
 def compute_parabolic_sar(df: pd.DataFrame, af: float = 0.02, max_af: float = 0.2) -> pd.Series:
     if df.empty:
@@ -165,7 +165,7 @@ def simulate_trades(df: pd.DataFrame, p: Params, initial_equity: float = 100000.
                 'pnl': pnl,
                 'return_pct': 100*ret
             })
-        equity_curve.append({'date': df.index[next_i], 'equity': equity})
+    equity_curve.append({'date': df.index[next_i], 'equity': equity})
     trades_df = pd.DataFrame(trades)
     curve_df = pd.DataFrame(equity_curve).set_index('date') if len(equity_curve) else pd.DataFrame(columns=['equity'])
     wins = (trades_df['pnl'] > 0).sum() if len(trades_df) else 0
@@ -291,4 +291,24 @@ if datasets:
         plt.plot(df.index, compute_parabolic_sar(df, p.sar_af, p.sar_max_af), '--', label='SAR')
         if not trades_df.empty:
             plt.scatter(trades_df['entry_date'], trades_df['entry_price'], marker='^', color='g', label='Entry')
-            plt.scatter(trades_df['exit_date'], trades_df['exit_price'], marker='v', color='r', label
+            plt.scatter(trades_df['exit_date'], trades_df['exit_price'], marker='v', color='r', label='Exit')
+        
+        plt.title(f"Price Chart and Trades for {symbol}")
+        plt.xlabel("Date")
+        plt.ylabel("Price")
+        plt.legend()
+        plt.grid(True)
+        st.pyplot(fig)
+        
+    if all_trades:
+        st.subheader("All Trades")
+        full_trades_df = pd.concat(all_trades)
+        st.dataframe(full_trades_df)
+        csv_buffer = io.StringIO()
+        full_trades_df.to_csv(csv_buffer, index=False)
+        st.download_button(
+            label="Download All Trades as CSV",
+            data=csv_buffer.getvalue(),
+            file_name="all_trades.csv",
+            mime="text/csv"
+        )
