@@ -25,9 +25,6 @@ def compute_atr(df: pd.DataFrame, period: int = 14) -> pd.Series:
     # Using Exponentially Weighted Moving Average for ATR as is standard
     return tr.ewm(alpha=1/period, adjust=False).mean()
 
-# FIX: Rewrote the ADX calculation to be correct and efficient.
-# The original version used incorrect logic (simple moving average instead of Wilder's smoothing)
-# and was extremely slow due to nested loops. This version is vectorized and standard.
 def compute_adx(df: pd.DataFrame, period: int = 14) -> pd.Series:
     if df.empty or len(df) < period * 2:
         return pd.Series([np.nan] * len(df), index=df.index)
@@ -36,7 +33,6 @@ def compute_adx(df: pd.DataFrame, period: int = 14) -> pd.Series:
     low = df['low']
     close = df['close']
 
-    # Calculate DM and TR
     move_up = high.diff()
     move_down = low.diff().mul(-1)
     plus_dm = pd.Series(np.where((move_up > move_down) & (move_up > 0), move_up, 0.0), index=df.index)
@@ -48,12 +44,10 @@ def compute_adx(df: pd.DataFrame, period: int = 14) -> pd.Series:
         (low - close.shift(1)).abs()
     ], axis=1).max(axis=1)
 
-    # Apply Wilder's smoothing (equivalent to an EMA with alpha = 1/period)
     atr = tr.ewm(alpha=1/period, adjust=False).mean()
     plus_di = 100 * plus_dm.ewm(alpha=1/period, adjust=False).mean() / atr
     minus_di = 100 * minus_dm.ewm(alpha=1/period, adjust=False).mean() / atr
     
-    # Calculate DX and ADX
     dx = 100 * (plus_di - minus_di).abs() / (plus_di + minus_di).abs()
     adx = dx.ewm(alpha=1/period, adjust=False).mean()
     return adx
@@ -71,32 +65,27 @@ def compute_parabolic_sar(df: pd.DataFrame, af: float = 0.02, max_af: float = 0.
     for i in range(1, len(df)):
         prev_sar = sar.iloc[i-1]
         
-        # Calculate current SAR
         sar.iloc[i] = prev_sar + accel * (extreme_point - prev_sar)
 
         if uptrend:
-            # If price penetrates SAR, reverse trend
             if low.iloc[i] < sar.iloc[i]:
                 uptrend = False
-                sar.iloc[i] = extreme_point  # Set SAR to the prior extreme point
+                sar.iloc[i] = extreme_point
                 extreme_point = low.iloc[i]
                 accel = af
             else:
                 sar.iloc[i] = min(sar.iloc[i], low.iloc[i-1], low.iloc[i-2] if i > 1 else low.iloc[i-1])
-                # If new high is made, update extreme point and acceleration
                 if high.iloc[i] > extreme_point:
                     extreme_point = high.iloc[i]
                     accel = min(max_af, accel + af)
         else: # Downtrend
-            # If price penetrates SAR, reverse trend
             if high.iloc[i] > sar.iloc[i]:
                 uptrend = True
-                sar.iloc[i] = extreme_point # Set SAR to the prior extreme point
+                sar.iloc[i] = extreme_point
                 extreme_point = high.iloc[i]
                 accel = af
             else:
                 sar.iloc[i] = max(sar.iloc[i], high.iloc[i-1], high.iloc[i-2] if i > 1 else high.iloc[i-1])
-                # If new low is made, update extreme point and acceleration
                 if low.iloc[i] < extreme_point:
                     extreme_point = low.iloc[i]
                     accel = min(max_af, accel + af)
@@ -125,7 +114,7 @@ initial_equity = 100000.0
 
 # ------------------- Strategy Logic -------------------
 def is_capitulation_flush(i: int, df: pd.DataFrame, p: Params) -> bool:
-    if i < 20: return False # Need enough data for averages
+    if i < 20: return False
     row = df.iloc[i]
     pct_change = (row['close'] / row['open'] - 1.0) if row['open'] > 0 else 0
     if pct_change > p.flush_pct_threshold: return False
@@ -183,7 +172,6 @@ def simulate_trades(df: pd.DataFrame, p: Params, initial_equity: float = 100000.
     equity, trades, equity_curve = initial_equity, [], [{'date': df.index[0], 'equity': initial_equity}]
     
     for date, signal in candidates.iterrows():
-        # FIX: Added specific exception handling instead of a bare 'except'.
         try:
             signal_idx = df.index.get_loc(date)
             if signal_idx + 1 >= len(df): continue
@@ -191,12 +179,12 @@ def simulate_trades(df: pd.DataFrame, p: Params, initial_equity: float = 100000.
             entry_bar = df.iloc[signal_idx + 1]
             entry_date = df.index[signal_idx + 1]
 
-            if entry_bar['open'] >= signal['trigger']: # Enter on next bar open if gap up
+            if entry_bar['open'] >= signal['trigger']:
                 entry_price = float(entry_bar['open'])
-            elif entry_bar['low'] <= signal['trigger'] <= entry_bar['high']: # Enter intra-day if trigger is hit
+            elif entry_bar['low'] <= signal['trigger'] <= entry_bar['high']:
                 entry_price = signal['trigger']
             else:
-                continue # No entry
+                continue
 
             position_size = equity * p.max_position_pct
             shares = int(position_size / entry_price) if entry_price > 0 else 0
@@ -206,7 +194,7 @@ def simulate_trades(df: pd.DataFrame, p: Params, initial_equity: float = 100000.
             exit_price, exit_date, exit_reason = None, None, "Max Hold"
             
             max_hold_idx = min(len(df) - 1, signal_idx + 1 + p.hold_max_bars)
-            for j in range(signal_idx + 2, max_hold_idx + 1): # Start check from bar after entry
+            for j in range(signal_idx + 2, max_hold_idx + 1):
                 current_bar = df.iloc[j]
                 current_date = df.index[j]
                 
@@ -233,7 +221,7 @@ def simulate_trades(df: pd.DataFrame, p: Params, initial_equity: float = 100000.
 
     trades_df = pd.DataFrame(trades) if trades else pd.DataFrame()
     curve_df = pd.DataFrame(equity_curve).set_index('date').sort_index() if equity_curve else pd.DataFrame()
-    curve_df['equity'] = curve_df['equity'].cummax() # Ensure equity doesn't go back in time
+    curve_df['equity'] = curve_df['equity'].cummax()
     
     if not trades_df.empty:
         total_trades = len(trades_df)
@@ -269,7 +257,6 @@ datasets = []
 
 # ------------------- Data Loading -------------------
 if mode == "Upload CSV/ZIP":
-    # Simplified upload logic for clarity
     uploaded_files = st.file_uploader("Upload CSV or ZIP files", type=["csv", "zip"], accept_multiple_files=True)
 
     def load_csv_file(f, filename) -> Tuple[str, pd.DataFrame]:
@@ -311,26 +298,33 @@ elif mode == "Enter ticker(s)":
             try:
                 with st.spinner(f"Downloading {ticker}..."):
                     df = yf.download(ticker, start=start_date, end=end_date, progress=False)
+                
                 if df.empty:
                     st.warning(f"No data found for {ticker}")
                     continue
-                # FIX: Correctly handle yfinance column names (e.g., 'Open' -> 'open')
-                df.columns = [col.lower() for col in df.columns]
+                
+                # --- START OF FIX ---
+                # Robustly handle column names, including unexpected MultiIndex from yfinance
+                if isinstance(df.columns, pd.MultiIndex):
+                    # Flatten the MultiIndex columns, e.g., ('Open', 'MSFT') -> 'open_msft'
+                    df.columns = ['_'.join(map(str, col)).strip().lower() for col in df.columns.values]
+                else:
+                    # It's a regular Index, just convert to lower
+                    df.columns = [str(col).lower() for col in df.columns]
+                # --- END OF FIX ---
+                
                 datasets.append((ticker, df))
             except Exception as e:
                 st.error(f"Failed to fetch {ticker}: {e}")
 
 # ------------------- Run backtest and display results -------------------
-# FIX: Completed the main execution block to run the simulation and show results.
 if datasets:
     st.header("Backtest Results")
     all_trades_list = []
-    combined_equity_curve = pd.DataFrame(index=pd.to_datetime([]))
-
+    
     for symbol, df in datasets:
         trades_df, curve_df, stats = simulate_trades(df, p, initial_equity)
         
-        # Add symbol to trades df and append to master list
         if not trades_df.empty:
             trades_df['symbol'] = symbol
             all_trades_list.append(trades_df)
@@ -343,19 +337,17 @@ if datasets:
             col4.metric("Sharpe-like", f"{stats['sharpe_like']:.2f}")
             col5.metric("Max Drawdown", f"{stats['max_drawdown_pct']:.2f}%")
 
-            # Plotting
             fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(12, 8), gridspec_kw={'height_ratios': [3, 1]})
             fig.suptitle(f'Equity Curve & Trades for {symbol}', fontsize=16)
             
-            # Equity Curve
             ax1.plot(curve_df.index, curve_df['equity'], label='Equity', color='blue')
             ax1.set_title('Equity Curve')
             ax1.set_ylabel('Portfolio Value ($)')
             ax1.grid(True, alpha=0.3)
 
-            # Price Chart with Trades
             ax2.plot(df.index, df['close'], label='Close Price', color='black', alpha=0.6)
-            ax2.plot(df.index, df['sar'], ':', color='purple', label='Parabolic SAR', alpha=0.5)
+            if 'sar' in df.columns:
+                ax2.plot(df.index, df['sar'], ':', color='purple', label='Parabolic SAR', alpha=0.5)
             
             if not trades_df.empty:
                 buys = trades_df.set_index('entry_date')
@@ -376,12 +368,10 @@ if datasets:
 
     if all_trades_list:
         st.header("Combined Portfolio Results")
-        # In a real scenario, a portfolio-level backtest would be needed.
-        # This is a simplified aggregation for demonstration.
         all_trades_df = pd.concat(all_trades_list).sort_values(by='entry_date').reset_index(drop=True)
         
         total_pnl = all_trades_df['pnl'].sum()
-        final_portfolio_equity = initial_equity + total_pnl
+        final_portfolio_equity = initial_equity * len(datasets) + total_pnl # Simplified aggregation
         total_trades = len(all_trades_df)
         winning_trades = (all_trades_df['pnl'] > 0).sum()
         agg_win_rate = 100 * winning_trades / total_trades if total_trades > 0 else 0
@@ -389,7 +379,7 @@ if datasets:
         
         col1, col2, col3, col4 = st.columns(4)
         col1.metric("Total Trades", total_trades)
-        col2.metric("Overall Final Equity", f"${final_portfolio_equity:,.2f}")
+        col2.metric("Overall Final Equity (Sum)", f"${final_portfolio_equity:,.2f}")
         col3.metric("Aggregate Win Rate", f"{agg_win_rate:.2f}%")
         col4.metric("Aggregate Avg Return", f"{agg_avg_return:.2f}%")
 
