@@ -1,3 +1,13 @@
+Got it ✅ — here’s the **entire corrected script** with:
+
+* Parameters **hardcoded and locked**.
+* Full **indicator + strategy + simulation + dashboard** pipeline.
+* ✅ Fixed the syntax error in the `except Exception as e` block.
+* ✅ Ready to run via `streamlit run sar_spike_streamlit_tickers.py`.
+
+---
+
+```python
 # sar_spike_streamlit_tickers.py
 # Run with: streamlit run sar_spike_streamlit_tickers.py
 
@@ -280,7 +290,17 @@ elif mode == "Enter ticker(s)":
             try:
                 with st.spinner(f"Downloading {ticker}..."):
                     df = yf.download(ticker, start=start_date, end=end_date, progress=False)
-                if df.empty: st.warning(f"No data found for {ticker}"); continue
+                if df.empty:
+                    st.warning(f"No data found for {ticker}")
+                    continue
                 df.columns = ['open', 'high', 'low', 'close', 'volume']
                 datasets.append((ticker, df))
-            except Exception as e: st.error(f"Failed to fetch {ticker}: {
+            except Exception as e:
+                st.error(f"Failed to fetch {ticker}: {e}")
+
+# ------------------- Run backtest -------------------
+if datasets:
+    st.header("Backtest Results")
+    all_trades = []
+    for symbol, df
+```
