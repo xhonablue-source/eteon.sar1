@@ -22,16 +22,13 @@ def compute_atr(df: pd.DataFrame, period: int = 14) -> pd.Series:
         (high - close.shift(1)).abs(),
         (low - close.shift(1)).abs()
     ], axis=1).max(axis=1)
-    # Using Exponentially Weighted Moving Average for ATR as is standard
     return tr.ewm(alpha=1/period, adjust=False).mean()
 
 def compute_adx(df: pd.DataFrame, period: int = 14) -> pd.Series:
     if df.empty or len(df) < period * 2:
         return pd.Series([np.nan] * len(df), index=df.index)
     
-    high = df['high']
-    low = df['low']
-    close = df['close']
+    high, low, close = df['high'], df['low'], df['close']
 
     move_up = high.diff()
     move_down = low.diff().mul(-1)
@@ -64,7 +61,6 @@ def compute_parabolic_sar(df: pd.DataFrame, af: float = 0.02, max_af: float = 0.
 
     for i in range(1, len(df)):
         prev_sar = sar.iloc[i-1]
-        
         sar.iloc[i] = prev_sar + accel * (extreme_point - prev_sar)
 
         if uptrend:
@@ -94,9 +90,11 @@ def compute_parabolic_sar(df: pd.DataFrame, af: float = 0.02, max_af: float = 0.
 # ------------------- Config -------------------
 @dataclass
 class Params:
-    flush_pct_threshold: float = -0.25
-    below_5day_avg_pct: float = -0.40
-    volume_spike_mult: float = 3.0
+    # --- START OF TUNED PARAMETERS ---
+    flush_pct_threshold: float = -0.05   # Relaxed from -0.25
+    below_5day_avg_pct: float = -0.15    # Relaxed from -0.40
+    volume_spike_mult: float = 1.5       # Relaxed from 3.0
+    # --- END OF TUNED PARAMETERS ---
     sar_gap_pct: float = 0.20
     sar_atr_mult: float = 2.0
     adx_threshold: float = 25.0
@@ -224,9 +222,8 @@ def simulate_trades(df: pd.DataFrame, p: Params, initial_equity: float = 100000.
     curve_df['equity'] = curve_df['equity'].cummax()
     
     if not trades_df.empty:
-        total_trades = len(trades_df)
-        winning_trades = (trades_df['pnl'] > 0).sum()
-        win_rate_pct = 100 * winning_trades / total_trades
+        total_trades, winning_trades = len(trades_df), (trades_df['pnl'] > 0).sum()
+        win_rate_pct = 100 * winning_trades / total_trades if total_trades > 0 else 0
         avg_return_pct = trades_df['return_pct'].mean()
         
         returns = curve_df['equity'].pct_change().dropna()
@@ -248,9 +245,12 @@ st.header("SAR Reversion Spike Backtest")
 st.markdown("Upload OHLCV data or enter tickers to fetch automatically.")
 
 with st.sidebar:
-    st.header("Parameters (Locked)")
-    st.markdown("⚙️ Proprietary Strategy Parameters — Locked and optimized internally.", unsafe_allow_html=True)
-    st.markdown('<p style="color:gray;">All parameters are fixed and cannot be changed.</p>', unsafe_allow_html=True)
+    st.header("Parameters")
+    st.info("Parameters have been adjusted to capture setups similar to BMNR and VWAV.")
+    p.flush_pct_threshold = st.slider("Flush Pct Threshold", -1.0, 0.0, p.flush_pct_threshold, 0.01)
+    p.below_5day_avg_pct = st.slider("Below 5-Day Avg Pct", -1.0, 0.0, p.below_5day_avg_pct, 0.01)
+    p.volume_spike_mult = st.slider("Volume Spike Multiplier", 1.0, 10.0, p.volume_spike_mult, 0.1)
+    p.adx_threshold = st.slider("ADX Threshold", 10.0, 50.0, p.adx_threshold, 0.5)
 
 mode = st.radio("Select data source:", ["Enter ticker(s)", "Upload CSV/ZIP"])
 datasets = []
@@ -289,8 +289,8 @@ if mode == "Upload CSV/ZIP":
                 st.error(f"Failed to load {uploaded_file.name}: {e}")
 
 elif mode == "Enter ticker(s)":
-    tickers = st.text_input("Enter comma-separated tickers:", "AAPL,TSLA,GOOG")
-    start_date = st.date_input("Start date", datetime(2020, 1, 1))
+    tickers = st.text_input("Enter comma-separated tickers:", "BMNR,VWAV,ALAB,SOUN")
+    start_date = st.date_input("Start date", datetime(2024, 1, 1))
     end_date = st.date_input("End date", datetime.today())
     if st.button("Fetch & Run Backtest"):
         tickers_list = [t.strip().upper() for t in tickers.split(',') if t.strip()]
@@ -303,15 +303,24 @@ elif mode == "Enter ticker(s)":
                     st.warning(f"No data found for {ticker}")
                     continue
                 
-                # --- START OF FIX ---
-                # Robustly handle column names, including unexpected MultiIndex from yfinance
+                # --- START OF BUG FIX ---
+                # Correctly handle and standardize column names to prevent KeyError
                 if isinstance(df.columns, pd.MultiIndex):
-                    # Flatten the MultiIndex columns, e.g., ('Open', 'MSFT') -> 'open_msft'
-                    df.columns = ['_'.join(map(str, col)).strip().lower() for col in df.columns.values]
-                else:
-                    # It's a regular Index, just convert to lower
-                    df.columns = [str(col).lower() for col in df.columns]
-                # --- END OF FIX ---
+                    # For multi-level columns, take the first level (e.g., 'Open', 'High')
+                    df.columns = df.columns.get_level_values(0)
+                
+                # Convert all column names to lowercase strings
+                df.columns = df.columns.str.lower()
+
+                # Handle yfinance's 'adj close' column
+                if 'adj close' in df.columns:
+                    df = df.rename(columns={'adj close': 'close'})
+                
+                required_cols = ['open', 'high', 'low', 'close', 'volume']
+                if not all(col in df.columns for col in required_cols):
+                    st.error(f"Downloaded data for {ticker} is missing required columns. Got: {df.columns.tolist()}")
+                    continue
+                # --- END OF BUG FIX ---
                 
                 datasets.append((ticker, df))
             except Exception as e:
@@ -323,6 +332,12 @@ if datasets:
     all_trades_list = []
     
     for symbol, df in datasets:
+        # Ensure the dataframe has the required columns before simulation
+        required_cols = ['open', 'high', 'low', 'close', 'volume']
+        if not all(col in df.columns for col in required_cols):
+            st.error(f"Cannot run simulation for {symbol}: DataFrame is missing columns. Required: {required_cols}")
+            continue
+
         trades_df, curve_df, stats = simulate_trades(df, p, initial_equity)
         
         if not trades_df.empty:
@@ -371,7 +386,7 @@ if datasets:
         all_trades_df = pd.concat(all_trades_list).sort_values(by='entry_date').reset_index(drop=True)
         
         total_pnl = all_trades_df['pnl'].sum()
-        final_portfolio_equity = initial_equity * len(datasets) + total_pnl # Simplified aggregation
+        final_portfolio_equity = initial_equity * len(datasets) + total_pnl
         total_trades = len(all_trades_df)
         winning_trades = (all_trades_df['pnl'] > 0).sum()
         agg_win_rate = 100 * winning_trades / total_trades if total_trades > 0 else 0
