@@ -15,8 +15,7 @@ st.set_page_config(page_title='SAR Reversion Spike — Streamlit', layout='wide'
 
 # ------------------- Indicator helpers -------------------
 def compute_atr(df: pd.DataFrame, period: int = 14) -> pd.Series:
-    if df.empty:
-        return pd.Series([], dtype=float, index=df.index)
+    if df.empty: return pd.Series([], dtype=float, index=df.index)
     high, low, close = df['high'], df['low'], df['close']
     tr = pd.concat([
         high - low,
@@ -58,13 +57,11 @@ def compute_adx(df: pd.DataFrame, period: int = 14) -> pd.Series:
                             dsum = pdi + mdi
                             if dsum > 0:
                                 dx_vals.append(100 * abs(pdi - mdi) / dsum)
-                    if dx_vals:
-                        adx_values[i] = np.mean(dx_vals)
+                    if dx_vals: adx_values[i] = np.mean(dx_vals)
     return pd.Series(adx_values, index=df.index, dtype=float)
 
 def compute_parabolic_sar(df: pd.DataFrame, af: float = 0.02, max_af: float = 0.2) -> pd.Series:
-    if df.empty:
-        return pd.Series([], dtype=float, index=df.index)
+    if df.empty: return pd.Series([], dtype=float, index=df.index)
     high, low, n = df['high'].values, df['low'].values, len(df)
     sar, trend, ep, acc = np.zeros(n), np.ones(n, dtype=bool), np.zeros(n), np.full(n, af)
     sar[0], trend[0], ep[0] = low[0], True, high[0]
@@ -112,7 +109,6 @@ class Params:
     sar_max_af: float = 0.2
     hold_max_bars: int = 60
 
-# Hardcoded locked parameters
 p = Params()
 initial_equity = 100000.0
 
@@ -136,6 +132,7 @@ with st.sidebar:
         unsafe_allow_html=True
     )
 
-# ------------------- rest of your script (unchanged) -------------------
-# keep your simulate_trades, scan_candidates, and the backtest runner exactly as before
-# they will now run using the locked Params above.
+# ------------------- Strategy logic + backtest (your original full code here) -------------------
+# keep all your is_capitulation_flush, sar_gap_check, compute_trigger_price,
+# scan_candidates, simulate_trades, and the dashboard section as-is.
+# They will now run using the locked Params above.
