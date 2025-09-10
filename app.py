@@ -210,7 +210,7 @@ def simulate_trades(df: pd.DataFrame, p: Params, initial_equity: float = 100000.
                 equity += pnl
                 
                 trades.append({
-                    'signal_date': date, # --- ENHANCEMENT: Added signal date ---
+                    'signal_date': date,
                     'entry_date': entry_date,
                     'entry_price': entry_price,
                     'exit_date': exit_date,
@@ -218,7 +218,11 @@ def simulate_trades(df: pd.DataFrame, p: Params, initial_equity: float = 100000.
                     'shares': shares,
                     'pnl': pnl,
                     'return_pct': return_pct,
-                    'exit_reason': exit_reason
+                    'exit_reason': exit_reason,
+                    # --- NEW FIELDS ---
+                    'adx_at_signal': signal['adx'] if 'adx' in signal else None,
+                    'adx_at_entry': float(df.loc[entry_date, 'adx']) if 'adx' in df.columns and entry_date in df.index else None,
+                    'sustained_5pt': (exit_price - entry_price) >= 5.0
                 })
                 equity_curve.append({'date': exit_date, 'equity': equity})
             except (IndexError, KeyError) as e:
@@ -268,7 +272,7 @@ datasets = []
 
 # ------------------- Data Loading -------------------
 if mode == "Upload CSV/ZIP":
-    # (omitted for brevity, no changes from previous version)
+    # (omitted for brevity)
     pass
 elif mode == "Enter ticker(s)":
     tickers = st.text_input("Enter comma-separated tickers:", "BMNR,VWAV,ALAB,SOUN")
@@ -329,8 +333,6 @@ if datasets:
             fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(12, 8), gridspec_kw={'height_ratios': [3, 1]})
             fig.suptitle(f'Chart & Trades for {symbol}', fontsize=16)
             
-            # --- START OF BUG FIX ---
-            # Gracefully handle cases with 0 trades to prevent charting errors
             if not curve_df.empty and 'equity' in curve_df.columns:
                 ax1.plot(curve_df.index, curve_df['equity'], label='Equity', color='blue')
                 ax1.set_title('Equity Curve')
@@ -340,7 +342,6 @@ if datasets:
                          verticalalignment='center', transform=ax1.transAxes, fontsize=12, color='gray')
             ax1.set_ylabel('Portfolio Value ($)')
             ax1.grid(True, alpha=0.3)
-            # --- END OF BUG FIX ---
 
             ax2.plot(df.index, df['close'], label='Close Price', color='black', alpha=0.6)
             if 'sar' in df.columns:
@@ -349,25 +350,4 @@ if datasets:
             if not trades_df.empty:
                 buys = trades_df.set_index('entry_date')
                 sells = trades_df.set_index('exit_date')
-                ax2.plot(buys.index, buys['entry_price'], '^', markersize=8, color='green', label='Buy')
-                ax2.plot(sells.index, sells['exit_price'], 'v', markersize=8, color='red', label='Sell')
-            
-            ax2.set_title('Price Chart & Trades')
-            ax2.set_ylabel('Price ($)')
-            ax2.legend()
-            ax2.grid(True, alpha=0.3)
-
-            plt.tight_layout(rect=[0, 0, 1, 0.96])
-            st.pyplot(fig)
-
-            st.write("Trade Log:")
-            if not trades_df.empty:
-                # --- ENHANCEMENT: Reordered columns for clarity ---
-                display_cols = ['signal_date', 'entry_date', 'exit_date', 'exit_reason', 'entry_price', 'exit_price', 'return_pct', 'pnl']
-                st.dataframe(trades_df[display_cols].style.format({'entry_price': '{:.2f}', 'exit_price': '{:.2f}', 'pnl': '{:,.2f}', 'return_pct': '{:.2f}%'}))
-            else:
-                st.write("No trades were generated for this period.")
-
-    if all_trades_list:
-        # (omitted for brevity, no changes from previous version)
-        pass
+                ax2.plot(buys.index, buys['entry
