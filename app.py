@@ -350,4 +350,66 @@ if datasets:
             if not trades_df.empty:
                 buys = trades_df.set_index('entry_date')
                 sells = trades_df.set_index('exit_date')
-                ax2.plot(buys.index, buys['entry
+                ax2.plot(buys.index, buys['entry_price'], '^', markersize=8, color='green', label='Buy')
+                ax2.plot(sells.index, sells['exit_price'], 'v', markersize=8, color='red', label='Sell')
+            
+            ax2.set_title('Price Chart & Trades')
+            ax2.set_ylabel('Price ($)')
+            ax2.legend()
+            ax2.grid(True, alpha=0.3)
+
+            plt.tight_layout(rect=[0, 0, 1, 0.96])
+            st.pyplot(fig)
+
+            st.write("Trade Log:")
+            if not trades_df.empty:
+                display_cols = [
+                    'signal_date','entry_date','exit_date','exit_reason',
+                    'entry_price','exit_price','return_pct','pnl',
+                    'adx_at_signal','adx_at_entry','sustained_5pt'
+                ]
+                st.dataframe(
+                    trades_df[display_cols].style.format({
+                        'entry_price': '{:.2f}',
+                        'exit_price': '{:.2f}',
+                        'pnl': '{:,.2f}',
+                        'return_pct': '{:.2f}%',
+                        'adx_at_signal': '{:.2f}',
+                        'adx_at_entry': '{:.2f}'
+                    })
+                )
+            else:
+                st.write("No trades were generated for this period.")
+
+            # --- NEW ANALYSIS ---
+            if not trades_df.empty:
+                winners = trades_df[trades_df['sustained_5pt']]
+                if not winners.empty:
+                    min_adx = winners['adx_at_entry'].min()
+                    st.success(f"Minimum ADX among ≥5-point long exits: {min_adx:.2f}")
+
+                    thresholds = list(range(20, 46, 5))
+                    summary_rows = []
+                    for t in thresholds:
+                        eligible = trades_df[trades_df['adx_at_entry'] >= t]
+                        wins = eligible[eligible['sustained_5pt']]
+                        rate = (len(wins) / len(eligible) * 100) if len(eligible) else None
+                        summary_rows.append({
+                            'ADX ≥': t,
+                            'Trades': len(eligible),
+                            '5pt Wins': len(wins),
+                            'Win Rate %': f"{rate:.1f}%" if rate is not None else "n/a"
+                        })
+                    st.write("### ADX Threshold Summary")
+                    st.dataframe(pd.DataFrame(summary_rows))
+                else:
+                    st.info("No ≥5-point exits in this run.")
+
+    # Aggregate across all tickers
+    if all_trades_list:
+        st.header("Aggregate Results Across All Tickers")
+        all_trades_df = pd.concat(all_trades_list, ignore_index=True)
+        winners_all = all_trades_df[all_trades_df['sustained_5pt']]
+        if not winners_all.empty:
+            min_adx_all = winners_all['adx_at_entry'].min()
+            st.success(f"Overall minimum ADX among ≥5-point exits: {min_adx_all:.2f}")
